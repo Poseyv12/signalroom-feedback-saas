@@ -11,7 +11,10 @@ function response(status: number, body?: unknown) {
 }
 
 describe('SignalRoom onboarding', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.history.replaceState({}, '', '/app');
+  });
 
   it('registers a user and moves to workspace creation', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')

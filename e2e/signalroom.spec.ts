@@ -5,13 +5,30 @@ function safeSuffix(projectName: string) {
   return `${projectName}-${Date.now()}`.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
 }
 
+test('renders the marketing site, stores an update request, and has no accessibility or overflow defects', async ({ page }, testInfo) => {
+  const suffix = safeSuffix(testInfo.project.name);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Collect product feedback without losing requests in email and chat.' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'View the public demo board' })).toHaveAttribute('href', '/b/vercel-production-feedback');
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://signalroom-feedback-saas.vercel.app/');
+
+  await page.getByLabel('Email for product updates').fill(`${suffix}-updates@example.com`);
+  await page.getByLabel('Company (optional)').fill('Synthetic Browser Test');
+  await page.getByRole('button', { name: 'Request product updates' }).click();
+  await expect(page.getByRole('status')).toContainText('Your update request is saved.');
+
+  const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
 test('completes the production feedback workflow without accessibility violations', async ({ page }, testInfo) => {
   const suffix = safeSuffix(testInfo.project.name);
   const boardName = `Product Feedback ${testInfo.project.name}`;
   const boardSlug = `product-feedback-${suffix}`;
   const feedbackTitle = `Keyboard navigation ${testInfo.project.name}`;
 
-  await page.goto('/');
+  await page.goto('/app');
   await expect(page.getByRole('heading', { name: /Turn scattered requests/i })).toBeVisible();
 
   await page.evaluate(() => {

@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { LegalPage, MarketingSite } from './MarketingSite';
 
 type User = { id: string; name: string; email: string };
 type Organization = { id: string; name: string; slug: string; role: 'owner' | 'admin' | 'member' };
@@ -45,13 +46,15 @@ function publicSlugFromPath() {
   return match?.[1] ?? null;
 }
 
-export default function App() {
+function ProductApp() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [user, setUser] = useState<User | null>(null);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [boardData, setBoardData] = useState<BoardData | null>(null);
-  const [authMode, setAuthMode] = useState<'register' | 'login'>('register');
+  const [authMode, setAuthMode] = useState<'register' | 'login'>(() => (
+    new URLSearchParams(window.location.search).get('mode') === 'login' ? 'login' : 'register'
+  ));
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showPostForm, setShowPostForm] = useState(false);
@@ -387,4 +390,12 @@ export default function App() {
       </main>
     </div></>
   );
+}
+
+export default function App() {
+  const path = window.location.pathname.replace(/\/$/, '') || '/';
+  if (path === '/') return <MarketingSite />;
+  if (path === '/privacy') return <LegalPage kind="privacy" />;
+  if (path === '/terms') return <LegalPage kind="terms" />;
+  return <ProductApp />;
 }
