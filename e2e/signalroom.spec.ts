@@ -26,9 +26,11 @@ test('keeps the public demo viewable when live preview data is unavailable', asy
   await page.route('**/api/boards/vercel-production-feedback', (route) => route.abort('failed'));
   await page.goto('/b/vercel-production-feedback');
 
-  await expect(page.getByRole('heading', { name: 'Production Feedback' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'AcmeFlow Product Roadmap' })).toBeVisible();
   await expect(page.getByRole('status')).toContainText('Showing a read-only demo snapshot');
-  await expect(page.getByRole('heading', { name: 'Hosted smoke-test evidence' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Slack request capture' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Duplicate suggestion detection' })).toBeVisible();
+  await expect(page.getByText(/smoke-test/i)).toHaveCount(0);
   await expect(page.getByRole('heading', { name: /Turn scattered requests/i })).toHaveCount(0);
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
