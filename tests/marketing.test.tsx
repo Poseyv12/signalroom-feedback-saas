@@ -53,6 +53,18 @@ describe('SignalRoom public routes', () => {
     expect(screen.getByText(/requires legal review/i)).toBeInTheDocument();
   });
 
+  it('renders a branded 404 without bootstrapping the product app', () => {
+    window.history.replaceState({}, '', '/missing-page');
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    render(<App />);
+
+    expect(screen.getByRole('heading', { level: 1, name: 'This signal went quiet.' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Return to SignalRoom' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'Open the product' })).toHaveAttribute('href', '/app');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('stores a product-update request and keeps personal data out of analytics', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
       const url = String(input);

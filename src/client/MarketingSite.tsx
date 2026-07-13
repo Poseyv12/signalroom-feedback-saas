@@ -174,6 +174,21 @@ export function MarketingSite() {
   </div>;
 }
 
+export function NotFoundPage() {
+  return <div className="not-found-shell">
+    <header className="marketing-header"><Brand /><a href="/">Homepage</a></header>
+    <main id="main-content" tabIndex={-1}>
+      <p className="eyebrow">404 / Signal not found</p>
+      <h1>This signal went quiet.</h1>
+      <p>The page may have moved, or the address may not belong to a public SignalRoom route.</p>
+      <div className="hero-actions">
+        <a className="primary-button" href="/">Return to SignalRoom</a>
+        <a className="secondary-button" href="/app">Open the product</a>
+      </div>
+    </main>
+  </div>;
+}
+
 export function LegalPage({ kind }: { kind: 'privacy' | 'terms' }) {
   const privacy = kind === 'privacy';
   return <div className="legal-shell"><header className="marketing-header"><Brand /><a href="/">Back to homepage</a></header><main id="main-content" tabIndex={-1}>

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { LegalPage, MarketingSite } from './MarketingSite';
+import { LegalPage, MarketingSite, NotFoundPage } from './MarketingSite';
 
 type User = { id: string; name: string; email: string };
 type Organization = { id: string; name: string; slug: string; role: 'owner' | 'admin' | 'member' };
@@ -397,5 +397,6 @@ export default function App() {
   if (path === '/') return <MarketingSite />;
   if (path === '/privacy') return <LegalPage kind="privacy" />;
   if (path === '/terms') return <LegalPage kind="terms" />;
-  return <ProductApp />;
+  if (path === '/app' || /^\/b\/[a-z0-9-]+$/.test(path)) return <ProductApp />;
+  return <NotFoundPage />;
 }

@@ -224,6 +224,10 @@ h1, h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; lette
 .legal-shell h1 { margin: 14px 0 28px; font-size: clamp(3.5rem, 7vw, 6rem); }
 .legal-shell section { padding: 34px 0; border-top: 1px solid var(--line); }
 .legal-review { padding: 18px; color: #772a20; background: #ffe5df; border-left: 4px solid var(--coral); }
+.not-found-shell main { display: flex; width: min(980px, calc(100% - 40px)); min-height: calc(100vh - 76px); flex-direction: column; justify-content: center; margin: 0 auto; padding: 80px 0; }
+.not-found-shell main::after { position: fixed; right: -90px; bottom: -140px; z-index: -1; width: min(44vw, 560px); aspect-ratio: 1; border: clamp(35px, 6vw, 84px) solid rgba(49, 92, 245, 0.09); border-radius: 50%; content: ""; }
+.not-found-shell h1 { max-width: 850px; margin: 16px 0 24px; font-size: clamp(4rem, 9vw, 8.5rem); line-height: 0.9; }
+.not-found-shell main > p:not(.eyebrow) { max-width: 590px; color: var(--slate); font-size: 1.08rem; line-height: 1.7; }
 
 @media (max-width: 1000px) {
   .marketing-hero { min-height: auto; grid-template-columns: 1fr; }
