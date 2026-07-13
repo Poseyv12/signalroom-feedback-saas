@@ -20,7 +20,10 @@ describe('Supabase Postgres migrations', () => {
     const migrations = await db.query<{ version: string | number; name: string }>(
       'SELECT version, name FROM schema_migrations ORDER BY version',
     );
-    expect(migrations.rows).toEqual([{ version: 202607130001, name: 'initial' }]);
+    expect(migrations.rows).toEqual([
+      { version: 202607130001, name: 'initial' },
+      { version: 202607130002, name: 'lock_down_public_api' },
+    ]);
 
     const tables = await db.query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
@@ -38,6 +41,16 @@ describe('Supabase Postgres migrations', () => {
       'users',
       'votes',
     ]));
+
+    const rls = await db.query<{ relname: string; relrowsecurity: boolean }>(
+      `SELECT relname, relrowsecurity
+       FROM pg_class
+       WHERE relname = ANY($1::text[])
+       ORDER BY relname`,
+      [['boards', 'comments', 'feedback_posts', 'memberships', 'organizations', 'sessions', 'status_history', 'users', 'votes']],
+    );
+    expect(rls.rows).toHaveLength(9);
+    expect(rls.rows.every((table) => table.relrowsecurity)).toBe(true);
   });
 
   it('enforces tenant and identity constraints in Postgres', async () => {
