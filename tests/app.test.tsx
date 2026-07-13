@@ -59,9 +59,11 @@ describe('SignalRoom onboarding', () => {
 
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'Production Feedback' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'AcmeFlow Product Roadmap' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Showing a read-only demo snapshot');
-    expect(screen.getByRole('heading', { name: 'Hosted smoke-test evidence' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Slack request capture' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Duplicate suggestion detection' })).toBeInTheDocument();
+    expect(screen.queryByText(/smoke-test/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /turn scattered requests/i })).not.toBeInTheDocument();
   });
 
