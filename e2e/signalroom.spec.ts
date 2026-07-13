@@ -22,6 +22,17 @@ test('renders the marketing site, stores an update request, and has no accessibi
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
+test('keeps the public demo viewable when live preview data is unavailable', async ({ page }) => {
+  await page.route('**/api/boards/vercel-production-feedback', (route) => route.abort('failed'));
+  await page.goto('/b/vercel-production-feedback');
+
+  await expect(page.getByRole('heading', { name: 'Production Feedback' })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('Showing a read-only demo snapshot');
+  await expect(page.getByRole('heading', { name: 'Hosted smoke-test evidence' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Turn scattered requests/i })).toHaveCount(0);
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+});
+
 test('completes the production feedback workflow without accessibility violations', async ({ page }, testInfo) => {
   const suffix = safeSuffix(testInfo.project.name);
   const boardName = `Product Feedback ${testInfo.project.name}`;
