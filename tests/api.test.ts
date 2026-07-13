@@ -64,6 +64,18 @@ describe('authentication', () => {
     expect(httpsResponse.headers['set-cookie'][0]).toContain('Secure');
   });
 
+  it('uses the configured session lifetime for cookies and stored sessions', async () => {
+    const ttlApp = createApp({ db, appOrigin: 'http://localhost', sessionTtlMs: 60 * 60 * 1000 });
+    const response = await request(ttlApp).post('/api/auth/register').send({
+      email: 'ttl@example.com', name: 'TTL User', password: 'correct horse battery staple',
+    });
+    expect(response.headers['set-cookie'][0]).toContain('Max-Age=3600');
+    const session = db.prepare('SELECT expires_at FROM sessions').get() as { expires_at: string };
+    const remaining = new Date(session.expires_at).getTime() - Date.now();
+    expect(remaining).toBeGreaterThan(59 * 60 * 1000);
+    expect(remaining).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+
   it('rate limits repeated login attempts', async () => {
     const limitedApp = createApp({ db, appOrigin: 'http://localhost', authAttemptLimit: 2 });
     const credentials = { email: 'missing@example.com', password: 'incorrect password' };
@@ -95,6 +107,31 @@ describe('authentication', () => {
     expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
   });
 
+  it('rejects mismatched mutation origins', async () => {
+    const response = await request(app)
+      .post('/api/auth/register')
+      .set('Origin', 'https://attacker.example')
+      .send({ email: 'origin@example.com', name: 'Origin User', password: 'correct horse battery staple' });
+    expect(response.status).toBe(403);
+  });
+
+  it('treats expired and malformed sessions as unauthenticated', async () => {
+    const agent = await register('expired@example.com');
+    db.prepare("UPDATE sessions SET expires_at = '2000-01-01T00:00:00.000Z'").run();
+    expect((await agent.get('/api/me')).status).toBe(401);
+
+    const malformed = await request(app).get('/api/me').set('Cookie', 'signalroom_session=%E0%A4%A');
+    expect(malformed.status).toBe(401);
+  });
+
+  it('returns a useful 413 response for oversized JSON bodies', async () => {
+    const response = await request(app)
+      .post('/api/auth/register')
+      .send({ padding: 'x'.repeat(33 * 1024) });
+    expect(response.status).toBe(413);
+    expect(response.body.error).toMatch(/too large/i);
+  });
+
   it('rejects weak passwords and duplicate email registration', async () => {
     expect((await request(app).post('/api/auth/register').send({ email: 'a@example.com', name: 'A', password: 'short' })).status).toBe(400);
     await register('same@example.com');
@@ -118,6 +155,17 @@ describe('organizations and tenant boundaries', () => {
     const organization = await createOrganization(owner);
 
     const denied = await outsider.post(`/api/organizations/${organization.id}/boards`).send({ name: 'Ideas', slug: 'ideas' });
+    expect(denied.status).toBe(403);
+  });
+
+  it('denies member-level board creation', async () => {
+    const owner = await register('owner@example.com');
+    const member = await register('member@example.com');
+    const organization = await createOrganization(owner);
+    const memberRow = db.prepare('SELECT id FROM users WHERE email = ?').get('member@example.com') as { id: string };
+    db.prepare("INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, 'member')").run(organization.id, memberRow.id);
+
+    const denied = await member.post(`/api/organizations/${organization.id}/boards`).send({ name: 'Ideas', slug: 'member-ideas' });
     expect(denied.status).toBe(403);
   });
 });

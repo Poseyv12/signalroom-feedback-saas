@@ -2,16 +2,14 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import express from 'express';
 import { createApp } from './app.js';
+import { parseServerConfig } from './config.js';
 import { createDatabase } from './db.js';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
-const port = Number(process.env.PORT || 4174);
-const databasePath = process.env.DATABASE_PATH || './data/signalroom.db';
-const appOrigin = process.env.APP_ORIGIN || `http://localhost:${port}`;
-const production = process.env.NODE_ENV === 'production';
+const { port, databasePath, appOrigin, sessionTtlMs, trustProxyHops, production } = parseServerConfig(process.env);
 const db = createDatabase(databasePath);
-const app = createApp({ db, appOrigin });
+const app = createApp({ db, appOrigin, sessionTtlMs, trustProxyHops });
 const distDir = resolve(process.cwd(), 'dist');
 
 if (existsSync(distDir)) {

@@ -261,12 +261,12 @@ export default function App() {
   }, [boardData, filter]);
 
   if (phase === 'loading') {
-    return <main id="main-content" className="center-shell"><p className="loading-line">Opening the signal room…</p></main>;
+    return <><main id="main-content" tabIndex={-1} className="center-shell"><p className="loading-line">Opening the signal room…</p></main></>;
   }
 
   if (phase === 'auth') {
     return (
-      <main id="main-content" className="auth-shell">
+      <><main id="main-content" tabIndex={-1} className="auth-shell">
         <section className="auth-story" aria-labelledby="auth-title">
           <div className="brand-mark"><span aria-hidden="true">S</span> SignalRoom</div>
           <p className="eyebrow">Customer feedback, without the archaeology</p>
@@ -296,14 +296,14 @@ export default function App() {
             <button className="primary-button" disabled={busy}>{busy ? 'Working…' : authMode === 'register' ? 'Create account' : 'Sign in'}</button>
           </form>
         </section>
-      </main>
+      </main></>
     );
   }
 
   if (phase === 'workspace' || phase === 'board-setup') {
     const creatingWorkspace = phase === 'workspace';
     return (
-      <main id="main-content" className="setup-shell">
+      <><main id="main-content" tabIndex={-1} className="setup-shell">
         <header className="setup-header"><div className="brand-mark"><span aria-hidden="true">S</span> SignalRoom</div><p>{user?.email}</p></header>
         <section className="setup-card">
           <p className="step-label">Setup {creatingWorkspace ? '01' : '02'} / 02</p>
@@ -316,16 +316,16 @@ export default function App() {
             <button className="primary-button" disabled={busy}>{busy ? 'Creating…' : creatingWorkspace ? 'Create workspace' : 'Create board'}</button>
           </form>
         </section>
-      </main>
+      </main></>
     );
   }
 
-  if (!boardData) return <main id="main-content" className="center-shell"><p>No board is selected.</p></main>;
+  if (!boardData) return <><main id="main-content" tabIndex={-1} className="center-shell"><p>No board is selected.</p></main></>;
 
   const canModerate = Boolean(organization && ['owner', 'admin'].includes(organization.role));
 
   return (
-    <div className="app-shell">
+    <><div className="app-shell">
       <header className="app-header">
         <a className="brand-mark" href="/" onClick={(event) => event.preventDefault()}><span aria-hidden="true">S</span> SignalRoom</a>
         <div className="header-actions">
@@ -347,7 +347,7 @@ export default function App() {
         <div className="public-link"><span>Public board</span><a href={`/b/${boardData.board.slug}`}>/b/{boardData.board.slug}</a></div>
       </aside>
 
-      <main id="main-content" className="board-main">
+      <main id="main-content" tabIndex={-1} className="board-main">
         <section className="board-heading">
           <div><p className="eyebrow">{boardData.board.organizationName}</p><h1>{boardData.board.name}</h1><p>Requests ranked by customer signal, with every roadmap decision visible.</p></div>
           {user && <button className="primary-button" onClick={() => setShowPostForm((open) => !open)}>{showPostForm ? 'Close form' : 'Share feedback'}</button>}
@@ -385,6 +385,6 @@ export default function App() {
           ))}
         </section>
       </main>
-    </div>
+    </div></>
   );
 }

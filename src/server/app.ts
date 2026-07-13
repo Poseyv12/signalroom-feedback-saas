@@ -4,7 +4,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import type { AppDatabase } from './db.js';
 
 const SESSION_COOKIE = 'signalroom_session';
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const statuses = ['under_review', 'planned', 'in_progress', 'shipped'] as const;
 type Status = (typeof statuses)[number];
 type Role = 'owner' | 'admin' | 'member';
@@ -16,6 +16,8 @@ type CreateAppOptions = {
   db: AppDatabase;
   appOrigin: string;
   authAttemptLimit?: number;
+  sessionTtlMs?: number;
+  trustProxyHops?: number;
 };
 
 function jsonError(res: Response, status: number, error: string) {
@@ -54,7 +56,11 @@ function parseCookies(header: string | undefined): Record<string, string> {
       const index = part.indexOf('=');
       const key = index >= 0 ? part.slice(0, index).trim() : part.trim();
       const value = index >= 0 ? part.slice(index + 1).trim() : '';
-      return [key, decodeURIComponent(value)];
+      try {
+        return [key, decodeURIComponent(value)];
+      } catch {
+        return [key, ''];
+      }
     }),
   );
 }
@@ -63,13 +69,13 @@ function tokenHash(token: string) {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function setSessionCookie(res: Response, token: string, secureCookies: boolean) {
+function setSessionCookie(res: Response, token: string, secureCookies: boolean, sessionTtlMs: number) {
   const parts = [
     `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
-    `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
+    `Max-Age=${Math.floor(sessionTtlMs / 1000)}`,
   ];
   if (secureCookies) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
@@ -85,10 +91,10 @@ function publicUser(row: any): CurrentUser {
   return { id: String(row.id), email: String(row.email), name: String(row.name) };
 }
 
-function createSession(db: AppDatabase, userId: string) {
+function createSession(db: AppDatabase, userId: string, sessionTtlMs: number) {
   const token = randomBytes(32).toString('base64url');
   const hash = tokenHash(token);
-  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  const expiresAt = new Date(Date.now() + sessionTtlMs).toISOString();
   db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(hash, userId, expiresAt);
   return token;
 }
@@ -130,11 +136,18 @@ function shapePost(db: AppDatabase, row: any) {
   };
 }
 
-export function createApp({ db, appOrigin, authAttemptLimit = 10 }: CreateAppOptions) {
+export function createApp({
+  db,
+  appOrigin,
+  authAttemptLimit = 10,
+  sessionTtlMs = DEFAULT_SESSION_TTL_MS,
+  trustProxyHops = 0,
+}: CreateAppOptions) {
   const app = express();
   const authAttempts = new Map<string, { count: number; resetAt: number }>();
   const secureCookies = new URL(appOrigin).protocol === 'https:';
   app.disable('x-powered-by');
+  if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
   app.use(express.json({ limit: '32kb' }));
 
   app.use((_req, res, next) => {
@@ -202,8 +215,8 @@ export function createApp({ db, appOrigin, authAttemptLimit = 10 }: CreateAppOpt
     const id = randomUUID();
     const passwordHash = await bcrypt.hash(password, 12);
     db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run(id, userEmail, name, passwordHash);
-    const token = createSession(db, id);
-    setSessionCookie(res, token, secureCookies);
+    const token = createSession(db, id, sessionTtlMs);
+    setSessionCookie(res, token, secureCookies, sessionTtlMs);
     return res.status(201).json({ user: { id, email: userEmail, name } });
   });
 
@@ -226,8 +239,8 @@ export function createApp({ db, appOrigin, authAttemptLimit = 10 }: CreateAppOpt
       return jsonError(res, 401, 'Email or password is incorrect.');
     }
     authAttempts.delete(attemptKey);
-    const token = createSession(db, row.id);
-    setSessionCookie(res, token, secureCookies);
+    const token = createSession(db, row.id, sessionTtlMs);
+    setSessionCookie(res, token, secureCookies, sessionTtlMs);
     return res.json({ user: publicUser(row) });
   });
 
@@ -392,6 +405,9 @@ export function createApp({ db, appOrigin, authAttemptLimit = 10 }: CreateAppOpt
   app.use('/api', (_req, res) => jsonError(res, 404, 'API route not found.'));
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 500;
+    if (status === 413) return jsonError(res, 413, 'Request body is too large.');
+    if (status === 400) return jsonError(res, 400, 'Request body is not valid JSON.');
     if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
       return jsonError(res, 409, 'A record with those unique values already exists.');
     }

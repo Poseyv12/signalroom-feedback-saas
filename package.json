@@ -12,6 +12,10 @@
     "dev:client": "vite",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:container": "bash scripts/container-smoke.sh",
+    "db:backup": "tsx src/server/backup.ts",
+    "db:restore": "tsx src/server/restore.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
@@ -24,6 +28,8 @@
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
+    "@playwright/test": "^1.61.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

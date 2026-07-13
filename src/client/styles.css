@@ -10,7 +10,7 @@
   --blue: #315cf5;
   --coral: #e85d4a;
   --moss: #23745b;
-  --slate: #687383;
+  --slate: #596473;
   --line: #cfd1c9;
   --shadow: 0 18px 48px rgba(24, 32, 43, 0.1);
 }
@@ -50,7 +50,7 @@ h1, h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; lette
 .signal-line { width: 34px; height: 1px; background: var(--line); }
 .auth-panel { display: flex; flex-direction: column; justify-content: center; padding: clamp(36px, 7vw, 100px); color: white; background: var(--ink); }
 .auth-panel h2 { margin: 32px 0 8px; color: white; font-size: clamp(2rem, 4vw, 3.5rem); }
-.auth-panel .muted { color: #aeb8c5; }
+.auth-panel .muted, .auth-panel .field-note { color: #aeb8c5; }
 .auth-tabs { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid #435061; }
 .auth-tabs button { padding: 14px 8px; color: #aeb8c5; background: transparent; border: 0; border-bottom: 3px solid transparent; }
 .auth-tabs button[aria-selected="true"] { color: white; border-color: #6d8cff; }
