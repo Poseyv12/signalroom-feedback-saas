@@ -14,6 +14,7 @@ describe('Vercel and Supabase production contract', () => {
     expect(functionSource).toContain('export default createApp');
     expect(vercel.framework).toBe('vite');
     expect(vercel.rewrites).toContainEqual({ source: '/api/:path*', destination: '/api' });
+    expect(vercel.rewrites).toContainEqual({ source: '/:path*', destination: '/index.html' });
   });
 
   it('tracks a Supabase-compatible Postgres migration', () => {

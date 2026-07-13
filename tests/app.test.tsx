@@ -11,7 +11,10 @@ function response(status: number, body?: unknown) {
 }
 
 describe('SignalRoom onboarding', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    window.history.replaceState({}, '', '/app');
+  });
 
   it('registers a user and moves to workspace creation', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
@@ -48,6 +51,18 @@ describe('SignalRoom onboarding', () => {
     await user.click(screen.getByRole('button', { name: 'Create account' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('An account already exists for that email.');
+  });
+
+  it('shows the public demo snapshot instead of redirecting to sign in when preview data is unavailable', async () => {
+    window.history.replaceState({}, '', '/b/vercel-production-feedback');
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('preview API unavailable'));
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Production Feedback' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('Showing a read-only demo snapshot');
+    expect(screen.getByRole('heading', { name: 'Hosted smoke-test evidence' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /turn scattered requests/i })).not.toBeInTheDocument();
   });
 
   it('submits a comment, clears the form, and reloads the conversation', async () => {

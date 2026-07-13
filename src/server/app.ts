@@ -17,6 +17,10 @@ type CreateAppOptions = {
   db: AppDatabase;
   appOrigin: string;
   authAttemptLimit?: number;
+  marketingAttemptLimit?: number;
+  marketingEmailAdapter?: {
+    sendProductUpdateConfirmation(input: { email: string }): Promise<void>;
+  };
   sessionTtlMs?: number;
   trustProxyHops?: number;
 };
@@ -155,11 +159,14 @@ export function createApp({
   db,
   appOrigin,
   authAttemptLimit = 10,
+  marketingAttemptLimit = 8,
+  marketingEmailAdapter,
   sessionTtlMs = DEFAULT_SESSION_TTL_MS,
   trustProxyHops = 0,
 }: CreateAppOptions) {
   const app = express();
   const authAttempts = new Map<string, { count: number; resetAt: number }>();
+  const marketingAttempts = new Map<string, { count: number; resetAt: number }>();
   const secureCookies = new URL(appOrigin).protocol === 'https:';
   app.disable('x-powered-by');
   if (trustProxyHops > 0) app.set('trust proxy', trustProxyHops);
@@ -210,6 +217,64 @@ export function createApp({
   app.get('/api/health', async (_req, res) => {
     await db.query('SELECT 1');
     return res.json({ ok: true });
+  });
+
+  app.post('/api/marketing/leads', async (req: Request, res: Response) => {
+    const attemptKey = String(req.ip);
+    const now = Date.now();
+    const current = marketingAttempts.get(attemptKey);
+    const attempts = !current || current.resetAt <= now ? { count: 0, resetAt: now + 15 * 60 * 1000 } : current;
+    if (attempts.count >= marketingAttemptLimit) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((attempts.resetAt - now) / 1000))));
+      return jsonError(res, 429, 'Too many update requests. Try again later.');
+    }
+    attempts.count += 1;
+    marketingAttempts.set(attemptKey, attempts);
+
+    const website = typeof req.body?.website === 'string' ? req.body.website.trim() : '';
+    if (website) return res.status(202).json({ accepted: true });
+    const leadEmail = email(req.body?.email);
+    const company = req.body?.company === undefined || req.body?.company === '' ? null : text(req.body.company, 1, 100);
+    if (!leadEmail || (req.body?.company && !company)) {
+      return jsonError(res, 400, 'Enter a valid email and keep the optional company name under 100 characters.');
+    }
+    const inserted = await db.query(
+      `INSERT INTO marketing_leads (id, email, company) VALUES ($1, $2, $3)
+       ON CONFLICT (email) DO NOTHING RETURNING id`,
+      [randomUUID(), leadEmail, company],
+    );
+    if (inserted.rows[0] && marketingEmailAdapter) {
+      try {
+        await marketingEmailAdapter.sendProductUpdateConfirmation({ email: leadEmail });
+      } catch {
+        return jsonError(res, 503, 'Your update request was saved, but confirmation delivery is unavailable.');
+      }
+    }
+    return res.status(202).json({ accepted: true });
+  });
+
+  app.post('/api/marketing/events', async (req: Request, res: Response) => {
+    const event = typeof req.body?.event === 'string' ? req.body.event : '';
+    const properties = req.body?.properties;
+    const events = new Set(['primary_cta_clicked', 'demo_clicked', 'pricing_cta_clicked', 'lead_form_started', 'lead_form_succeeded', 'lead_form_failed']);
+    const ctaIds = new Set(['hero-primary', 'hero-demo', 'header-primary', 'availability-primary', 'final-primary']);
+    const routes = new Set(['/', '/privacy', '/terms']);
+    const failures = new Set(['validation', 'rate_limit', 'storage', 'provider', 'network', 'unknown']);
+    if (!events.has(event) || !properties || typeof properties !== 'object' || Array.isArray(properties)) {
+      return jsonError(res, 400, 'Analytics event is not allowed.');
+    }
+    const record = properties as Record<string, unknown>;
+    if (Object.keys(record).some((key) => !['ctaId', 'route', 'failureCategory'].includes(key))
+      || typeof record.route !== 'string' || !routes.has(record.route)
+      || (record.ctaId !== undefined && (typeof record.ctaId !== 'string' || !ctaIds.has(record.ctaId)))
+      || (record.failureCategory !== undefined && (typeof record.failureCategory !== 'string' || !failures.has(record.failureCategory)))) {
+      return jsonError(res, 400, 'Analytics properties are not allowed.');
+    }
+    await db.query(
+      'INSERT INTO marketing_events (id, event_name, properties) VALUES ($1, $2, $3)',
+      [randomUUID(), event, JSON.stringify(record)],
+    );
+    return res.status(202).json({ accepted: true });
   });
 
   app.post('/api/auth/register', async (req: Request, res: Response) => {

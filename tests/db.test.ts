@@ -23,6 +23,7 @@ describe('Supabase Postgres migrations', () => {
     expect(migrations.rows).toEqual([
       { version: 202607130001, name: 'initial' },
       { version: 202607130002, name: 'lock_down_public_api' },
+      { version: 202607130003, name: 'marketing_leads_and_events' },
     ]);
 
     const tables = await db.query<{ table_name: string }>(
@@ -35,6 +36,8 @@ describe('Supabase Postgres migrations', () => {
       'comments',
       'feedback_posts',
       'memberships',
+      'marketing_events',
+      'marketing_leads',
       'organizations',
       'sessions',
       'status_history',
@@ -47,9 +50,9 @@ describe('Supabase Postgres migrations', () => {
        FROM pg_class
        WHERE relname = ANY($1::text[])
        ORDER BY relname`,
-      [['boards', 'comments', 'feedback_posts', 'memberships', 'organizations', 'sessions', 'status_history', 'users', 'votes']],
+      [['boards', 'comments', 'feedback_posts', 'memberships', 'marketing_events', 'marketing_leads', 'organizations', 'sessions', 'status_history', 'users', 'votes']],
     );
-    expect(rls.rows).toHaveLength(9);
+    expect(rls.rows).toHaveLength(11);
     expect(rls.rows.every((table) => table.relrowsecurity)).toBe(true);
   });
 

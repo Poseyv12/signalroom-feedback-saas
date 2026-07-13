@@ -217,3 +217,70 @@ describe('feedback workflow', () => {
     expect(changed.body.post.statusHistory).toHaveLength(2);
   });
 });
+
+describe('marketing boundaries', () => {
+  it('normalizes and stores product-update requests without enumerating duplicates', async () => {
+    const first = await request(app).post('/api/marketing/leads').send({
+      email: '  Updates@Example.com ', company: '  Acme Labs  ', website: '',
+    });
+    const duplicate = await request(app).post('/api/marketing/leads').send({
+      email: 'updates@example.com', company: 'Other', website: '',
+    });
+
+    expect(first.status).toBe(202);
+    expect(duplicate.status).toBe(202);
+    expect(duplicate.body).toEqual(first.body);
+    const rows = await db.query<{ email: string; company: string }>('SELECT email, company FROM marketing_leads');
+    expect(rows.rows).toEqual([{ email: 'updates@example.com', company: 'Acme Labs' }]);
+  });
+
+  it('rejects invalid leads and silently accepts honeypot submissions without storage', async () => {
+    expect((await request(app).post('/api/marketing/leads').send({ email: 'not-email', website: '' })).status).toBe(400);
+    expect((await request(app).post('/api/marketing/leads').send({ email: 'bot@example.com', website: 'https://spam.example' })).status).toBe(202);
+    expect((await db.query('SELECT id FROM marketing_leads')).rows).toHaveLength(0);
+  });
+
+  it('rate limits product-update requests before storage', async () => {
+    const limited = createApp({ db, appOrigin: 'http://localhost', marketingAttemptLimit: 1 });
+    expect((await request(limited).post('/api/marketing/leads').send({ email: 'one@example.com', website: '' })).status).toBe(202);
+    const blocked = await request(limited).post('/api/marketing/leads').send({ email: 'two@example.com', website: '' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers['retry-after']).toBeTruthy();
+  });
+
+  it('persists before invoking the email adapter and reports adapter failure honestly', async () => {
+    let observedStored = false;
+    const deliveryApp = createApp({
+      db,
+      appOrigin: 'http://localhost',
+      marketingEmailAdapter: {
+        async sendProductUpdateConfirmation() {
+          observedStored = (await db.query('SELECT id FROM marketing_leads')).rows.length === 1;
+          throw new Error('controlled provider failure');
+        },
+      },
+    });
+    const result = await request(deliveryApp).post('/api/marketing/leads').send({ email: 'delivery@example.com', website: '' });
+    expect(observedStored).toBe(true);
+    expect(result.status).toBe(503);
+    expect(result.body.error).not.toContain('delivery@example.com');
+  });
+
+  it('stores only allowlisted analytics events and reviewed properties', async () => {
+    const accepted = await request(app).post('/api/marketing/events').send({
+      event: 'primary_cta_clicked', properties: { ctaId: 'hero-primary', route: '/' },
+    });
+    expect(accepted.status).toBe(202);
+    const rows = await db.query<{ event_name: string; properties: Record<string, string> }>('SELECT event_name, properties FROM marketing_events');
+    expect(rows.rows).toEqual([{ event_name: 'primary_cta_clicked', properties: { ctaId: 'hero-primary', route: '/' } }]);
+  });
+
+  it.each([
+    { event: 'unknown', properties: { route: '/' } },
+    { event: 'lead_form_succeeded', properties: { route: '/', email: 'private@example.com' } },
+    { event: 'primary_cta_clicked', properties: { ctaId: 'unreviewed', route: '/' } },
+    { event: 'demo_clicked', properties: { ctaId: 'hero-demo', route: '/?secret=value' } },
+  ])('rejects unreviewed analytics payloads %#', async (payload) => {
+    expect((await request(app).post('/api/marketing/events').send(payload)).status).toBe(400);
+  });
+});

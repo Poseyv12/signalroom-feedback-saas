@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { LegalPage, MarketingSite, NotFoundPage } from './MarketingSite';
 
 type User = { id: string; name: string; email: string };
 type Organization = { id: string; name: string; slug: string; role: 'owner' | 'admin' | 'member' };
@@ -29,6 +30,30 @@ const statusLabels: Record<Status, string> = {
   shipped: 'Shipped',
 };
 
+const publicDemoSnapshot: BoardData = {
+  board: {
+    id: 'demo-board-snapshot',
+    name: 'Production Feedback',
+    slug: 'vercel-production-feedback',
+    organizationName: 'Vercel Verification Workspace',
+  },
+  posts: [{
+    id: 'demo-post-snapshot',
+    title: 'Hosted smoke-test evidence',
+    description: 'Verify that the Vercel frontend, Express function, secure cookie, and Supabase database work together over HTTPS.',
+    status: 'planned',
+    authorName: 'Vercel Smoke User',
+    voteCount: 1,
+    commentCount: 1,
+    comments: [{ id: 'demo-comment-snapshot', body: 'Hosted comment persistence verified.', authorName: 'Vercel Smoke User' }],
+    statusHistory: [
+      { status: 'under_review', createdAt: '2026-07-13T19:38:41.896Z' },
+      { status: 'planned', createdAt: '2026-07-13T19:39:37.614Z' },
+    ],
+    createdAt: '2026-07-13T19:38:41.896Z',
+  }],
+};
+
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...options,
@@ -45,16 +70,19 @@ function publicSlugFromPath() {
   return match?.[1] ?? null;
 }
 
-export default function App() {
+function ProductApp() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [user, setUser] = useState<User | null>(null);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [boardData, setBoardData] = useState<BoardData | null>(null);
-  const [authMode, setAuthMode] = useState<'register' | 'login'>('register');
+  const [authMode, setAuthMode] = useState<'register' | 'login'>(() => (
+    new URLSearchParams(window.location.search).get('mode') === 'login' ? 'login' : 'register'
+  ));
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [showPostForm, setShowPostForm] = useState(false);
+  const [demoSnapshot, setDemoSnapshot] = useState(false);
   const [filter, setFilter] = useState<Status | 'all'>('all');
 
   useEffect(() => {
@@ -67,6 +95,7 @@ export default function App() {
       try {
         const data = await api<BoardData>(`/api/boards/${publicSlug}`);
         setBoardData(data);
+        setDemoSnapshot(false);
         try {
           const me = await api<{ user: User }>('/api/me');
           setUser(me.user);
@@ -75,8 +104,16 @@ export default function App() {
         }
         setPhase('public-board');
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'Board not found.');
-        setPhase('auth');
+        if (publicSlug === publicDemoSnapshot.board.slug) {
+          setBoardData(publicDemoSnapshot);
+          setUser(null);
+          setError('');
+          setDemoSnapshot(true);
+          setPhase('public-board');
+        } else {
+          setError(caught instanceof Error ? caught.message : 'Board not found.');
+          setPhase('auth');
+        }
       }
       return;
     }
@@ -348,6 +385,7 @@ export default function App() {
       </aside>
 
       <main id="main-content" tabIndex={-1} className="board-main">
+        {demoSnapshot && <p className="snapshot-banner" role="status">Live preview data is unavailable. Showing a read-only demo snapshot.</p>}
         <section className="board-heading">
           <div><p className="eyebrow">{boardData.board.organizationName}</p><h1>{boardData.board.name}</h1><p>Requests ranked by customer signal, with every roadmap decision visible.</p></div>
           {user && <button className="primary-button" onClick={() => setShowPostForm((open) => !open)}>{showPostForm ? 'Close form' : 'Share feedback'}</button>}
@@ -387,4 +425,13 @@ export default function App() {
       </main>
     </div></>
   );
+}
+
+export default function App() {
+  const path = window.location.pathname.replace(/\/$/, '') || '/';
+  if (path === '/') return <MarketingSite />;
+  if (path === '/privacy') return <LegalPage kind="privacy" />;
+  if (path === '/terms') return <LegalPage kind="terms" />;
+  if (path === '/app' || /^\/b\/[a-z0-9-]+$/.test(path)) return <ProductApp />;
+  return <NotFoundPage />;
 }
