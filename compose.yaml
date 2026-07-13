@@ -1,0 +1,14 @@
+services:
+  signalroom:
+    build: .
+    ports:
+      - "4174:4174"
+    environment:
+      APP_ORIGIN: "http://localhost:4174"
+      DATABASE_PATH: "/data/signalroom.db"
+    volumes:
+      - signalroom-data:/data
+    restart: unless-stopped
+
+volumes:
+  signalroom-data:
