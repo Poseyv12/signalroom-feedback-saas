@@ -1,30 +1,38 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-describe('production server bundle', () => {
-  it('uses the NodeNext compiler so node:sqlite remains a built-in import', () => {
+describe('Vercel and Supabase production contract', () => {
+  it('builds the Vite client and type-checks the Node server', () => {
     const packageJson = JSON.parse(readFileSync(`${process.cwd()}/package.json`, 'utf8'));
+    expect(packageJson.scripts.build).toContain('vite build');
     expect(packageJson.scripts.build).toContain('tsc -p tsconfig.server.json');
   });
 
-  it('defines a container health check against the API endpoint', () => {
-    const dockerfile = readFileSync(`${process.cwd()}/Dockerfile`, 'utf8');
-    const compose = readFileSync(`${process.cwd()}/compose.yaml`, 'utf8');
-    expect(dockerfile).toContain('HEALTHCHECK');
-    expect(dockerfile).toContain('/api/health');
-    expect(dockerfile).toContain('/app/migrations');
-    expect(compose).toContain('healthcheck:');
+  it('exports an Express function and routes API requests through Vercel', () => {
+    const functionSource = readFileSync(`${process.cwd()}/api/index.ts`, 'utf8');
+    const vercel = JSON.parse(readFileSync(`${process.cwd()}/vercel.json`, 'utf8'));
+    expect(functionSource).toContain('export default createApp');
+    expect(vercel.framework).toBe('vite');
+    expect(vercel.rewrites).toContainEqual({ source: '/api/:path*', destination: '/api' });
   });
 
-  it('documents every production configuration value', () => {
+  it('tracks a Supabase-compatible Postgres migration', () => {
+    expect(existsSync(`${process.cwd()}/supabase/migrations/202607130001_initial.sql`)).toBe(true);
+    const migration = readFileSync(`${process.cwd()}/supabase/migrations/202607130001_initial.sql`, 'utf8');
+    expect(migration).toContain('TIMESTAMPTZ');
+    expect(migration).toContain('REFERENCES organizations(id)');
+  });
+
+  it('documents every server-side production configuration value without a real secret', () => {
     const environment = readFileSync(`${process.cwd()}/.env.example`, 'utf8');
+    expect(environment).toContain('DATABASE_URL=postgresql://');
+    expect(environment).toContain('[PASSWORD]');
     expect(environment).toContain('SESSION_TTL_HOURS=');
     expect(environment).toContain('TRUST_PROXY_HOPS=');
   });
 
-  it('exposes database backup and restore commands', () => {
+  it('exposes an explicit database migration command', () => {
     const packageJson = JSON.parse(readFileSync(`${process.cwd()}/package.json`, 'utf8'));
-    expect(packageJson.scripts['db:backup']).toBeTruthy();
-    expect(packageJson.scripts['db:restore']).toBeTruthy();
+    expect(packageJson.scripts['db:migrate']).toBeTruthy();
   });
 });

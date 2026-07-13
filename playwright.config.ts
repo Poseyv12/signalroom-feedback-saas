@@ -16,7 +16,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: `npm run build && rm -f /tmp/signalroom-playwright.db && PORT=${port} DATABASE_PATH=/tmp/signalroom-playwright.db APP_ORIGIN=${baseURL} NODE_ENV=production node dist-server/index.js`,
+    command: `npm run build && PORT=${port} APP_ORIGIN=${baseURL} NODE_ENV=production npx tsx tests/e2e-server.ts`,
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,

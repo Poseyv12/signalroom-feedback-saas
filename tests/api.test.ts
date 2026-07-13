@@ -1,17 +1,19 @@
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/server/app.js';
-import { createDatabase, type AppDatabase } from '../src/server/db.js';
+import { applyMigrations, type AppDatabase } from '../src/server/db.js';
+import { createTestDatabase } from './helpers/database.js';
 
 let db: AppDatabase;
 let app: ReturnType<typeof createApp>;
 
-beforeEach(() => {
-  db = createDatabase(':memory:');
+beforeEach(async () => {
+  db = await createTestDatabase();
+  await applyMigrations(db);
   app = createApp({ db, appOrigin: 'http://localhost' });
 });
 
-afterEach(() => db.close());
+afterEach(async () => db.close());
 
 async function register(email: string, name = 'Test User') {
   const agent = request.agent(app);
@@ -70,7 +72,7 @@ describe('authentication', () => {
       email: 'ttl@example.com', name: 'TTL User', password: 'correct horse battery staple',
     });
     expect(response.headers['set-cookie'][0]).toContain('Max-Age=3600');
-    const session = db.prepare('SELECT expires_at FROM sessions').get() as { expires_at: string };
+    const session = (await db.query<{ expires_at: string }>('SELECT expires_at FROM sessions')).rows[0];
     const remaining = new Date(session.expires_at).getTime() - Date.now();
     expect(remaining).toBeGreaterThan(59 * 60 * 1000);
     expect(remaining).toBeLessThanOrEqual(60 * 60 * 1000);
@@ -117,7 +119,7 @@ describe('authentication', () => {
 
   it('treats expired and malformed sessions as unauthenticated', async () => {
     const agent = await register('expired@example.com');
-    db.prepare("UPDATE sessions SET expires_at = '2000-01-01T00:00:00.000Z'").run();
+    await db.query("UPDATE sessions SET expires_at = '2000-01-01T00:00:00.000Z'");
     expect((await agent.get('/api/me')).status).toBe(401);
 
     const malformed = await request(app).get('/api/me').set('Cookie', 'signalroom_session=%E0%A4%A');
@@ -162,8 +164,11 @@ describe('organizations and tenant boundaries', () => {
     const owner = await register('owner@example.com');
     const member = await register('member@example.com');
     const organization = await createOrganization(owner);
-    const memberRow = db.prepare('SELECT id FROM users WHERE email = ?').get('member@example.com') as { id: string };
-    db.prepare("INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, 'member')").run(organization.id, memberRow.id);
+    const memberRow = (await db.query<{ id: string }>('SELECT id FROM users WHERE email = $1', ['member@example.com'])).rows[0];
+    await db.query(
+      "INSERT INTO memberships (organization_id, user_id, role) VALUES ($1, $2, 'member')",
+      [organization.id, memberRow.id],
+    );
 
     const denied = await member.post(`/api/organizations/${organization.id}/boards`).send({ name: 'Ideas', slug: 'member-ideas' });
     expect(denied.status).toBe(403);

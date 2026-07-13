@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import type { AppDatabase } from './db.js';
+import type { AppDatabase, DatabaseConnection } from './db.js';
 
 const SESSION_COOKIE = 'signalroom_session';
 const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -11,6 +11,7 @@ type Role = 'owner' | 'admin' | 'member';
 
 type CurrentUser = { id: string; email: string; name: string };
 type AuthedRequest = Request & { user?: CurrentUser; sessionHash?: string };
+type DataRow = Record<string, any>;
 
 type CreateAppOptions = {
   db: AppDatabase;
@@ -87,41 +88,55 @@ function clearSessionCookie(res: Response, secureCookies: boolean) {
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
-function publicUser(row: any): CurrentUser {
+function publicUser(row: DataRow): CurrentUser {
   return { id: String(row.id), email: String(row.email), name: String(row.name) };
 }
 
-function createSession(db: AppDatabase, userId: string, sessionTtlMs: number) {
+async function createSession(db: DatabaseConnection, userId: string, sessionTtlMs: number) {
   const token = randomBytes(32).toString('base64url');
   const hash = tokenHash(token);
   const expiresAt = new Date(Date.now() + sessionTtlMs).toISOString();
-  db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(hash, userId, expiresAt);
+  await db.query(
+    'INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
+    [hash, userId, expiresAt],
+  );
   return token;
 }
 
-function getMembership(db: AppDatabase, organizationId: string, userId: string) {
-  return db
-    .prepare('SELECT role FROM memberships WHERE organization_id = ? AND user_id = ?')
-    .get(organizationId, userId) as { role: Role } | undefined;
+async function getMembership(db: DatabaseConnection, organizationId: string, userId: string) {
+  const result = await db.query<{ role: Role }>(
+    'SELECT role FROM memberships WHERE organization_id = $1 AND user_id = $2',
+    [organizationId, userId],
+  );
+  return result.rows[0];
 }
 
-function statusHistory(db: AppDatabase, postId: string) {
-  return db
-    .prepare('SELECT status, created_at AS createdAt FROM status_history WHERE post_id = ? ORDER BY created_at, rowid')
-    .all(postId);
+async function statusHistory(db: DatabaseConnection, postId: string) {
+  const result = await db.query(
+    `SELECT status, created_at AS "createdAt"
+     FROM status_history WHERE post_id = $1 ORDER BY created_at, id`,
+    [postId],
+  );
+  return result.rows;
 }
 
-function shapePost(db: AppDatabase, row: any) {
-  const counts = db
-    .prepare(`SELECT
-      (SELECT COUNT(*) FROM votes WHERE post_id = ?) AS voteCount,
-      (SELECT COUNT(*) FROM comments WHERE post_id = ?) AS commentCount`)
-    .get(row.id, row.id) as { voteCount: number; commentCount: number };
-  const comments = db
-    .prepare(`SELECT comments.id, comments.body, comments.created_at AS createdAt, users.name AS authorName
-      FROM comments JOIN users ON users.id = comments.author_id
-      WHERE comments.post_id = ? ORDER BY comments.created_at, comments.rowid`)
-    .all(row.id);
+async function shapePost(db: DatabaseConnection, row: DataRow) {
+  const [countsResult, commentsResult, history] = await Promise.all([
+    db.query<{ vote_count: string | number; comment_count: string | number }>(
+      `SELECT
+        (SELECT COUNT(*) FROM votes WHERE post_id = $1) AS vote_count,
+        (SELECT COUNT(*) FROM comments WHERE post_id = $1) AS comment_count`,
+      [row.id],
+    ),
+    db.query(
+      `SELECT comments.id, comments.body, comments.created_at AS "createdAt", users.name AS "authorName"
+       FROM comments JOIN users ON users.id = comments.author_id
+       WHERE comments.post_id = $1 ORDER BY comments.created_at, comments.id`,
+      [row.id],
+    ),
+    statusHistory(db, String(row.id)),
+  ]);
+  const counts = countsResult.rows[0];
   return {
     id: row.id,
     title: row.title,
@@ -129,10 +144,10 @@ function shapePost(db: AppDatabase, row: any) {
     status: row.status,
     createdAt: row.created_at ?? row.createdAt,
     authorName: row.author_name ?? row.authorName,
-    voteCount: Number(counts.voteCount),
-    commentCount: Number(counts.commentCount),
-    comments,
-    statusHistory: statusHistory(db, row.id),
+    voteCount: Number(counts.vote_count),
+    commentCount: Number(counts.comment_count),
+    comments: commentsResult.rows,
+    statusHistory: history,
   };
 }
 
@@ -166,15 +181,17 @@ export function createApp({
     next();
   });
 
-  app.use((req: AuthedRequest, _res: Response, next: NextFunction) => {
+  app.use(async (req: AuthedRequest, _res: Response, next: NextFunction) => {
     const token = parseCookies(req.get('cookie'))[SESSION_COOKIE];
     if (!token) return next();
     const hash = tokenHash(token);
-    const row = db
-      .prepare(`SELECT users.id, users.email, users.name
-        FROM sessions JOIN users ON users.id = sessions.user_id
-        WHERE sessions.token_hash = ? AND sessions.expires_at > ?`)
-      .get(hash, new Date().toISOString());
+    const result = await db.query(
+      `SELECT users.id, users.email, users.name
+       FROM sessions JOIN users ON users.id = sessions.user_id
+       WHERE sessions.token_hash = $1 AND sessions.expires_at > $2`,
+      [hash, new Date().toISOString()],
+    );
+    const row = result.rows[0];
     if (row) {
       req.user = publicUser(row);
       req.sessionHash = hash;
@@ -190,7 +207,10 @@ export function createApp({
     return req.user;
   }
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true }));
+  app.get('/api/health', async (_req, res) => {
+    await db.query('SELECT 1');
+    return res.json({ ok: true });
+  });
 
   app.post('/api/auth/register', async (req: Request, res: Response) => {
     const attemptKey = `register:${req.ip}`;
@@ -209,13 +229,18 @@ export function createApp({
     if (!userEmail || !name || password.length < 12 || password.length > 128) {
       return jsonError(res, 400, 'Use a valid email, a 2-60 character name, and a password of at least 12 characters.');
     }
-    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(userEmail)) {
-      return jsonError(res, 409, 'An account already exists for that email.');
-    }
+    const existing = await db.query('SELECT 1 FROM users WHERE email = $1', [userEmail]);
+    if (existing.rows[0]) return jsonError(res, 409, 'An account already exists for that email.');
+
     const id = randomUUID();
     const passwordHash = await bcrypt.hash(password, 12);
-    db.prepare('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)').run(id, userEmail, name, passwordHash);
-    const token = createSession(db, id, sessionTtlMs);
+    const token = await db.transaction(async (connection) => {
+      await connection.query(
+        'INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4)',
+        [id, userEmail, name, passwordHash],
+      );
+      return createSession(connection, id, sessionTtlMs);
+    });
     setSessionCookie(res, token, secureCookies, sessionTtlMs);
     return res.status(201).json({ user: { id, email: userEmail, name } });
   });
@@ -232,20 +257,21 @@ export function createApp({
       res.setHeader('Retry-After', String(Math.max(1, Math.ceil((attempts.resetAt - now) / 1000))));
       return jsonError(res, 429, 'Too many sign-in attempts. Try again later.');
     }
-    const row = db.prepare('SELECT id, email, name, password_hash FROM users WHERE email = ?').get(userEmail) as any;
-    if (!row || !(await bcrypt.compare(password, row.password_hash))) {
+    const result = await db.query('SELECT id, email, name, password_hash FROM users WHERE email = $1', [userEmail]);
+    const row = result.rows[0];
+    if (!row || !(await bcrypt.compare(password, String(row.password_hash)))) {
       attempts.count += 1;
       authAttempts.set(attemptKey, attempts);
       return jsonError(res, 401, 'Email or password is incorrect.');
     }
     authAttempts.delete(attemptKey);
-    const token = createSession(db, row.id, sessionTtlMs);
+    const token = await createSession(db, String(row.id), sessionTtlMs);
     setSessionCookie(res, token, secureCookies, sessionTtlMs);
     return res.json({ user: publicUser(row) });
   });
 
-  app.post('/api/auth/logout', (req: AuthedRequest, res: Response) => {
-    if (req.sessionHash) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.sessionHash);
+  app.post('/api/auth/logout', async (req: AuthedRequest, res: Response) => {
+    if (req.sessionHash) await db.query('DELETE FROM sessions WHERE token_hash = $1', [req.sessionHash]);
     clearSessionCookie(res, secureCookies);
     return res.status(204).end();
   });
@@ -256,18 +282,19 @@ export function createApp({
     return res.json({ user });
   });
 
-  app.get('/api/organizations', (req: AuthedRequest, res: Response) => {
+  app.get('/api/organizations', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
-    const organizations = db
-      .prepare(`SELECT organizations.id, organizations.name, organizations.slug, memberships.role
-        FROM memberships JOIN organizations ON organizations.id = memberships.organization_id
-        WHERE memberships.user_id = ? ORDER BY organizations.created_at`)
-      .all(user.id);
-    return res.json({ organizations });
+    const result = await db.query(
+      `SELECT organizations.id, organizations.name, organizations.slug, memberships.role
+       FROM memberships JOIN organizations ON organizations.id = memberships.organization_id
+       WHERE memberships.user_id = $1 ORDER BY organizations.created_at`,
+      [user.id],
+    );
+    return res.json({ organizations: result.rows });
   });
 
-  app.post('/api/organizations', (req: AuthedRequest, res: Response) => {
+  app.post('/api/organizations', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
     const name = text(req.body?.name, 2, 80);
@@ -275,131 +302,184 @@ export function createApp({
     const baseSlug = slugify(name) || 'workspace';
     let slug = baseSlug;
     let suffix = 2;
-    while (db.prepare('SELECT 1 FROM organizations WHERE slug = ?').get(slug)) slug = `${baseSlug}-${suffix++}`;
-    const id = randomUUID();
-    db.exec('BEGIN');
-    try {
-      db.prepare('INSERT INTO organizations (id, name, slug) VALUES (?, ?, ?)').run(id, name, slug);
-      db.prepare("INSERT INTO memberships (organization_id, user_id, role) VALUES (?, ?, 'owner')").run(id, user.id);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
+    while ((await db.query('SELECT 1 FROM organizations WHERE slug = $1', [slug])).rows[0]) {
+      slug = `${baseSlug}-${suffix++}`;
     }
+    const id = randomUUID();
+    await db.transaction(async (connection) => {
+      await connection.query('INSERT INTO organizations (id, name, slug) VALUES ($1, $2, $3)', [id, name, slug]);
+      await connection.query(
+        "INSERT INTO memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')",
+        [id, user.id],
+      );
+    });
     return res.status(201).json({ organization: { id, name, slug, role: 'owner' } });
   });
 
-  app.get('/api/organizations/:organizationId/boards', (req: AuthedRequest, res: Response) => {
+  app.get('/api/organizations/:organizationId/boards', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
-    if (!getMembership(db, routeParam(req.params.organizationId), user.id)) return jsonError(res, 403, 'You do not have access to this organization.');
-    const boards = db.prepare('SELECT id, name, slug, created_at AS createdAt FROM boards WHERE organization_id = ? ORDER BY created_at').all(routeParam(req.params.organizationId));
-    return res.json({ boards });
+    const organizationId = routeParam(req.params.organizationId);
+    if (!(await getMembership(db, organizationId, user.id))) {
+      return jsonError(res, 403, 'You do not have access to this organization.');
+    }
+    const result = await db.query(
+      'SELECT id, name, slug, created_at AS "createdAt" FROM boards WHERE organization_id = $1 ORDER BY created_at',
+      [organizationId],
+    );
+    return res.json({ boards: result.rows });
   });
 
-  app.post('/api/organizations/:organizationId/boards', (req: AuthedRequest, res: Response) => {
+  app.post('/api/organizations/:organizationId/boards', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
-    const membership = getMembership(db, routeParam(req.params.organizationId), user.id);
-    if (!membership || !['owner', 'admin'].includes(membership.role)) return jsonError(res, 403, 'Owner or admin access is required.');
+    const organizationId = routeParam(req.params.organizationId);
+    const membership = await getMembership(db, organizationId, user.id);
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      return jsonError(res, 403, 'Owner or admin access is required.');
+    }
     const name = text(req.body?.name, 2, 80);
     const slug = text(req.body?.slug, 2, 60) ? slugify(req.body.slug) : '';
     if (!name || !slug) return jsonError(res, 400, 'Board name and a valid slug are required.');
-    if (db.prepare('SELECT 1 FROM boards WHERE slug = ?').get(slug)) return jsonError(res, 409, 'That public board slug is already in use.');
+    if ((await db.query('SELECT 1 FROM boards WHERE slug = $1', [slug])).rows[0]) {
+      return jsonError(res, 409, 'That public board slug is already in use.');
+    }
     const id = randomUUID();
-    db.prepare('INSERT INTO boards (id, organization_id, name, slug) VALUES (?, ?, ?, ?)').run(id, routeParam(req.params.organizationId), name, slug);
-    return res.status(201).json({ board: { id, organizationId: routeParam(req.params.organizationId), name, slug } });
+    await db.query(
+      'INSERT INTO boards (id, organization_id, name, slug) VALUES ($1, $2, $3, $4)',
+      [id, organizationId, name, slug],
+    );
+    return res.status(201).json({ board: { id, organizationId, name, slug } });
   });
 
-  app.get('/api/boards/:slug', (req: AuthedRequest, res: Response) => {
-    const board = db
-      .prepare(`SELECT boards.id, boards.name, boards.slug, organizations.name AS organizationName
-        FROM boards JOIN organizations ON organizations.id = boards.organization_id WHERE boards.slug = ?`)
-      .get(routeParam(req.params.slug)) as any;
+  app.get('/api/boards/:slug', async (req: AuthedRequest, res: Response) => {
+    const boardResult = await db.query(
+      `SELECT boards.id, boards.name, boards.slug, organizations.name AS "organizationName"
+       FROM boards JOIN organizations ON organizations.id = boards.organization_id
+       WHERE boards.slug = $1`,
+      [routeParam(req.params.slug)],
+    );
+    const board = boardResult.rows[0];
     if (!board) return jsonError(res, 404, 'Board not found.');
-    const rows = db
-      .prepare(`SELECT feedback_posts.*, users.name AS author_name
-        FROM feedback_posts JOIN users ON users.id = feedback_posts.author_id
-        WHERE feedback_posts.board_id = ? ORDER BY feedback_posts.created_at DESC, feedback_posts.rowid DESC`)
-      .all(board.id);
+    const postsResult = await db.query(
+      `SELECT feedback_posts.*, users.name AS author_name
+       FROM feedback_posts JOIN users ON users.id = feedback_posts.author_id
+       WHERE feedback_posts.board_id = $1 ORDER BY feedback_posts.created_at DESC, feedback_posts.id DESC`,
+      [board.id],
+    );
     return res.json({
       board: { id: board.id, name: board.name, slug: board.slug, organizationName: board.organizationName },
-      posts: rows.map((row) => shapePost(db, row)),
+      posts: await Promise.all(postsResult.rows.map((row) => shapePost(db, row))),
     });
   });
 
-  app.post('/api/boards/:boardId/posts', (req: AuthedRequest, res: Response) => {
+  app.post('/api/boards/:boardId/posts', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
-    if (!db.prepare('SELECT 1 FROM boards WHERE id = ?').get(routeParam(req.params.boardId))) return jsonError(res, 404, 'Board not found.');
+    const boardId = routeParam(req.params.boardId);
+    if (!(await db.query('SELECT 1 FROM boards WHERE id = $1', [boardId])).rows[0]) {
+      return jsonError(res, 404, 'Board not found.');
+    }
     const title = text(req.body?.title, 4, 120);
     const description = text(req.body?.description, 10, 2000);
     if (!title || !description) return jsonError(res, 400, 'Use a 4-120 character title and a 10-2000 character description.');
     const id = randomUUID();
-    db.exec('BEGIN');
-    try {
-      db.prepare('INSERT INTO feedback_posts (id, board_id, author_id, title, description) VALUES (?, ?, ?, ?, ?)').run(id, routeParam(req.params.boardId), user.id, title, description);
-      db.prepare('INSERT INTO status_history (id, post_id, status, changed_by) VALUES (?, ?, ?, ?)').run(randomUUID(), id, 'under_review', user.id);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-    const row = db.prepare(`SELECT feedback_posts.*, users.name AS author_name FROM feedback_posts JOIN users ON users.id = feedback_posts.author_id WHERE feedback_posts.id = ?`).get(id);
-    return res.status(201).json({ post: shapePost(db, row) });
+    await db.transaction(async (connection) => {
+      await connection.query(
+        'INSERT INTO feedback_posts (id, board_id, author_id, title, description) VALUES ($1, $2, $3, $4, $5)',
+        [id, boardId, user.id, title, description],
+      );
+      await connection.query(
+        'INSERT INTO status_history (id, post_id, status, changed_by) VALUES ($1, $2, $3, $4)',
+        [randomUUID(), id, 'under_review', user.id],
+      );
+    });
+    const result = await db.query(
+      `SELECT feedback_posts.*, users.name AS author_name
+       FROM feedback_posts JOIN users ON users.id = feedback_posts.author_id
+       WHERE feedback_posts.id = $1`,
+      [id],
+    );
+    return res.status(201).json({ post: await shapePost(db, result.rows[0]) });
   });
 
-  app.post('/api/posts/:postId/vote', (req: AuthedRequest, res: Response) => {
+  app.post('/api/posts/:postId/vote', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
-    if (!db.prepare('SELECT 1 FROM feedback_posts WHERE id = ?').get(routeParam(req.params.postId))) return jsonError(res, 404, 'Feedback post not found.');
-    const existing = db.prepare('SELECT 1 FROM votes WHERE post_id = ? AND user_id = ?').get(routeParam(req.params.postId), user.id);
-    if (existing) {
-      db.prepare('DELETE FROM votes WHERE post_id = ? AND user_id = ?').run(routeParam(req.params.postId), user.id);
-    } else {
-      db.prepare('INSERT INTO votes (post_id, user_id) VALUES (?, ?)').run(routeParam(req.params.postId), user.id);
+    const postId = routeParam(req.params.postId);
+    if (!(await db.query('SELECT 1 FROM feedback_posts WHERE id = $1', [postId])).rows[0]) {
+      return jsonError(res, 404, 'Feedback post not found.');
     }
-    const count = db.prepare('SELECT COUNT(*) AS count FROM votes WHERE post_id = ?').get(routeParam(req.params.postId)) as { count: number };
-    return res.json({ voted: !existing, voteCount: Number(count.count) });
+    const voted = await db.transaction(async (connection) => {
+      const existing = (await connection.query(
+        'SELECT 1 FROM votes WHERE post_id = $1 AND user_id = $2',
+        [postId, user.id],
+      )).rows[0];
+      if (existing) {
+        await connection.query('DELETE FROM votes WHERE post_id = $1 AND user_id = $2', [postId, user.id]);
+        return false;
+      }
+      await connection.query('INSERT INTO votes (post_id, user_id) VALUES ($1, $2)', [postId, user.id]);
+      return true;
+    });
+    const countResult = await db.query<{ count: string | number }>(
+      'SELECT COUNT(*) AS count FROM votes WHERE post_id = $1',
+      [postId],
+    );
+    return res.json({ voted, voteCount: Number(countResult.rows[0].count) });
   });
 
-  app.post('/api/posts/:postId/comments', (req: AuthedRequest, res: Response) => {
+  app.post('/api/posts/:postId/comments', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
-    if (!db.prepare('SELECT 1 FROM feedback_posts WHERE id = ?').get(routeParam(req.params.postId))) return jsonError(res, 404, 'Feedback post not found.');
+    const postId = routeParam(req.params.postId);
+    if (!(await db.query('SELECT 1 FROM feedback_posts WHERE id = $1', [postId])).rows[0]) {
+      return jsonError(res, 404, 'Feedback post not found.');
+    }
     const body = text(req.body?.body, 2, 1000);
     if (!body) return jsonError(res, 400, 'Comment must be 2-1000 characters.');
     const id = randomUUID();
-    db.prepare('INSERT INTO comments (id, post_id, author_id, body) VALUES (?, ?, ?, ?)').run(id, routeParam(req.params.postId), user.id, body);
+    await db.query(
+      'INSERT INTO comments (id, post_id, author_id, body) VALUES ($1, $2, $3, $4)',
+      [id, postId, user.id, body],
+    );
     return res.status(201).json({ comment: { id, body, authorName: user.name } });
   });
 
-  app.patch('/api/posts/:postId/status', (req: AuthedRequest, res: Response) => {
+  app.patch('/api/posts/:postId/status', async (req: AuthedRequest, res: Response) => {
     const user = requireUser(req, res);
     if (!user) return;
     const status = req.body?.status as Status;
     if (!statuses.includes(status)) return jsonError(res, 400, 'Status is not allowed.');
-    const row = db
-      .prepare(`SELECT feedback_posts.*, boards.organization_id, users.name AS author_name
-        FROM feedback_posts JOIN boards ON boards.id = feedback_posts.board_id
-        JOIN users ON users.id = feedback_posts.author_id WHERE feedback_posts.id = ?`)
-      .get(routeParam(req.params.postId)) as any;
+    const postId = routeParam(req.params.postId);
+    const result = await db.query(
+      `SELECT feedback_posts.*, boards.organization_id, users.name AS author_name
+       FROM feedback_posts JOIN boards ON boards.id = feedback_posts.board_id
+       JOIN users ON users.id = feedback_posts.author_id WHERE feedback_posts.id = $1`,
+      [postId],
+    );
+    const row = result.rows[0];
     if (!row) return jsonError(res, 404, 'Feedback post not found.');
-    const membership = getMembership(db, row.organization_id, user.id);
-    if (!membership || !['owner', 'admin'].includes(membership.role)) return jsonError(res, 403, 'Owner or admin access is required.');
-    if (row.status !== status) {
-      db.exec('BEGIN');
-      try {
-        db.prepare('UPDATE feedback_posts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, routeParam(req.params.postId));
-        db.prepare('INSERT INTO status_history (id, post_id, status, changed_by) VALUES (?, ?, ?, ?)').run(randomUUID(), routeParam(req.params.postId), status, user.id);
-        db.exec('COMMIT');
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw error;
-      }
+    const membership = await getMembership(db, String(row.organization_id), user.id);
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      return jsonError(res, 403, 'Owner or admin access is required.');
     }
-    const updated = db.prepare(`SELECT feedback_posts.*, users.name AS author_name FROM feedback_posts JOIN users ON users.id = feedback_posts.author_id WHERE feedback_posts.id = ?`).get(routeParam(req.params.postId));
-    return res.json({ post: shapePost(db, updated) });
+    if (row.status !== status) {
+      await db.transaction(async (connection) => {
+        await connection.query('UPDATE feedback_posts SET status = $1, updated_at = NOW() WHERE id = $2', [status, postId]);
+        await connection.query(
+          'INSERT INTO status_history (id, post_id, status, changed_by) VALUES ($1, $2, $3, $4)',
+          [randomUUID(), postId, status, user.id],
+        );
+      });
+    }
+    const updatedResult = await db.query(
+      `SELECT feedback_posts.*, users.name AS author_name
+       FROM feedback_posts JOIN users ON users.id = feedback_posts.author_id
+       WHERE feedback_posts.id = $1`,
+      [postId],
+    );
+    return res.json({ post: await shapePost(db, updatedResult.rows[0]) });
   });
 
   app.use('/api', (_req, res) => jsonError(res, 404, 'API route not found.'));
@@ -408,9 +488,8 @@ export function createApp({
     const status = typeof error === 'object' && error && 'status' in error ? Number(error.status) : 500;
     if (status === 413) return jsonError(res, 413, 'Request body is too large.');
     if (status === 400) return jsonError(res, 400, 'Request body is not valid JSON.');
-    if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
-      return jsonError(res, 409, 'A record with those unique values already exists.');
-    }
+    const databaseCode = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+    if (databaseCode === '23505') return jsonError(res, 409, 'A record with those unique values already exists.');
     console.error('Unhandled request error', error instanceof Error ? error.message : 'unknown');
     return jsonError(res, 500, 'The server could not complete the request.');
   });

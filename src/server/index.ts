@@ -3,12 +3,13 @@ import { resolve } from 'node:path';
 import express from 'express';
 import { createApp } from './app.js';
 import { parseServerConfig } from './config.js';
-import { createDatabase } from './db.js';
+import { applyMigrations, createDatabase } from './db.js';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
-const { port, databasePath, appOrigin, sessionTtlMs, trustProxyHops, production } = parseServerConfig(process.env);
-const db = createDatabase(databasePath);
+const { port, databaseUrl, appOrigin, sessionTtlMs, trustProxyHops, production } = parseServerConfig(process.env);
+const db = createDatabase(databaseUrl);
+await applyMigrations(db);
 const app = createApp({ db, appOrigin, sessionTtlMs, trustProxyHops });
 const distDir = resolve(process.cwd(), 'dist');
 
@@ -27,8 +28,7 @@ const server = app.listen(port, '0.0.0.0', () => {
 function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down.`);
   server.close(() => {
-    db.close();
-    process.exit(0);
+    void db.close().finally(() => process.exit(0));
   });
   setTimeout(() => process.exit(1), 10_000).unref();
 }
